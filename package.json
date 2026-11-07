@@ -1,0 +1,23 @@
+{
+  "name": "babelfish",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live English and Japanese captions, made readable.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch server.js",
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node --test test/*.test.js",
+    "check": "node --check server.js && node --check public/app.js && node --check public/audio-worklet.js",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0"
+  }
+}
