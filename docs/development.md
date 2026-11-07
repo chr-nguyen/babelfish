@@ -18,6 +18,15 @@ Reviewed `Downloads/LiveTranslate-Setup/app/index.html`, `server.py`, README, an
 - Conversation data is transient browser memory; no persistent history, accounts or shared-room feature.
 - This app is local-only and must not be exposed by changing the bind address without adding authentication and deployment controls.
 
+## Local mode — 2026-11-07
+
+Added after benchmarking local options on an i5-8250U (see `benchmarks/README.md`). Nemotron 3.5 ASR streaming 0.6B was taken from Adel's LiveTranslate design, because it streams text as people speak, unlike the batch Whisper models first tested. Qwen3.5-2B replaces OPUS-MT for more natural, context-aware translation.
+
+- Verified end to end through the real UI with Chrome's fake microphone and the mixed EN/JA sample: about 2 s from a finished sentence to its translation.
+- The browser's audio path matters. The worklet's averaging resampler halved the 6.5–8 kHz band and lost Japanese sentences, so the AudioContext is now created at the model rate. Browser noise suppression and auto-gain are off in local mode.
+- Short Japanese replies after English are still missed inconsistently. Chrome's fake microphone resamples twice (16 → 48 → 16 kHz), so test with a real microphone before drawing conclusions.
+- Translation quality needs a human review on shared recordings. Candidates are a few-shot prompt, Qwen3.5-4B, and local speech recognition with cloud translation of text only.
+
 ## Next real-audio evaluation
 
 Use consented recordings and live microphones, not just synthetic speech. For each case, measure first source text, first useful translation, stable final translation, dropped words, and translation revisions:

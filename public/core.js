@@ -6,7 +6,11 @@ export function cleanCaption(text, enabled = true) {
     .replace(/(^|[\s、。])(?:えー+と|えー+|えっと|ええと)(?:[\s、]+|$)/g, '$1')
     .replace(/\s{2,}/g, ' ').trim();
 }
-export function languageOf(text) { return /[\u3040-\u30ff\u3400-\u9fff]/u.test(text) ? 'ja' : 'en'; }
+// Majority script, so an English sentence containing one Japanese name stays English.
+export function languageOf(text) {
+  const ja = (text.match(/[\u3040-\u30ff\u3400-\u9fff]/gu) || []).length;
+  return ja > 0.3 * Math.max(1, text.replace(/\s/g, '').length) ? 'ja' : 'en';
+}
 export function orderedItems(items) {
   const byId = new Map(items.map(x => [x.id, x]));
   const result = [], visiting = new Set(), visited = new Set();
