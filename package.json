@@ -12,7 +12,8 @@
     "start": "node --env-file-if-exists=.env server.js",
     "test": "node --test test/*.test.js",
     "check": "node --check server.js && node --check public/app.js && node --check public/audio-worklet.js",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "local": "scripts/start-local.sh"
   },
   "dependencies": {
     "ws": "^8.18.3"
