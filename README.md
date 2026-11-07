@@ -2,15 +2,14 @@
 
 A web app for live English ↔ Japanese captions. Large, high-contrast text, continuous microphone capture, contextual translation, and no synthesized voice.
 
-It runs in one of two modes:
+It runs **entirely on this computer**: speech recognition and translation are local models, and no audio or text is sent online.
 
-| | **Local mode** | **OpenAI mode** |
+| Stage | Model | Runtime |
 |---|---|---|
-| Speech recognition | Nemotron 3.5 ASR streaming 0.6B (NeMo-Speech.cpp), on this machine | OpenAI realtime transcription |
-| Translation | Qwen3.5-2B (llama.cpp), on this machine | `gpt-4.1-mini` with conversation context |
-| Data leaves the computer | No | Audio and caption text go to OpenAI |
-| Needs | ~2.6 GB of downloads, ~2.5 GB free RAM | `OPENAI_API_KEY`, pay-per-use |
-| Translation quality | Usable, occasional meaning errors | Better (not yet measured live) |
+| Speech recognition | Nemotron 3.5 ASR streaming 0.6B (q8_0, 0.74 GB) | NeMo-Speech.cpp 0.3.0, CPU |
+| Translation | Qwen3.5-2B Instruct (Q4_K_M, 1.3 GB) | llama.cpp `llama-server` b12180, CPU, 4 threads |
+
+An optional OpenAI cloud mode also exists in the code, but it has never been run with a real API key (see [Optional: OpenAI cloud mode](#optional-openai-cloud-mode-untested)).
 
 ## Run
 
@@ -20,28 +19,18 @@ Requires Node.js 22+ and a recent Chromium-based browser (Chrome is tested).
 npm install
 ```
 
-### Local mode (no API key, nothing sent online)
-
-Linux x86_64. The first step downloads pinned, SHA-256-verified runtimes and models into the git-ignored `.benchmark/` folder.
+Linux x86_64. The first step downloads pinned, SHA-256-verified runtimes and models (~2.6 GB) into the git-ignored `.benchmark/` folder. About 2.5 GB of free RAM is needed while running.
 
 ```sh
-python3 -m venv .benchmark/venv          # only needed for the benchmarks
-benchmarks/fetch_local.sh                # one time, ~2.6 GB
+benchmarks/fetch_local.sh   # one time
 npm run local
 ```
 
 `npm run local` starts the speech server (port 8090), the translation server (port 8091) and the app, then serves **http://localhost:3000**. Startup takes about 10–30 seconds. Ctrl+C stops the servers it started.
 
-### OpenAI mode
+Note: `npm start` and `npm run dev` start the untested OpenAI mode, not local mode.
 
-```sh
-cp .env.example .env    # set OPENAI_API_KEY
-npm run dev
-```
-
-The key stays on the server, never in the browser or Git. Restart after editing `.env`. Live OpenAI connectivity, recognition quality and latency have not yet been verified with a real key.
-
-Without either mode configured, **Try a sample conversation** still works. It is clearly labeled as simulated.
+Without any model running, **Try a sample conversation** still works. It is clearly labeled as simulated.
 
 ## Using it
 
@@ -66,20 +55,34 @@ microphone → AudioWorklet (PCM16, 100 ms frames) → WebSocket /api/listen →
                      browser captions ← /api/translate ← server → translation service
 ```
 
-1. **Audio**: the browser resamples to the speech model's rate (16 kHz local, 24 kHz OpenAI) by creating the AudioContext at that rate. A worklet then emits mono PCM16 in 100 ms frames.
-2. **Speech**
-   - **Local**: all audio is streamed continuously, because NeMo-Speech finds sentence ends from silence itself. Its protocol resembles OpenAI's realtime events but has no item IDs, so the server assigns turn IDs. Lone fragments such as "っ" or "で", which the model emits around language switches, are dropped.
-   - **OpenAI**: a client-side energy gate sends only speech, with 300 ms of audio kept from just before speech starts. It ends a turn after 600 ms of quiet, a shorter pause after 4 s, or 8 s at most.
-3. **Translation**
-   - **Local**: only finished sentences are translated, because the two models share the CPU. Qwen is asked for the other language only, with thinking disabled and prompt caching on. Context lines are passed only if they are in the same language as the sentence: given context already in the target language, the small model tends to copy it.
-   - **OpenAI**: in-progress phrases are also translated, at most every 1–2 s, as are final ones. Structured output returns both languages plus the detected source.
+1. **Audio**: the browser resamples the microphone to 16 kHz by creating the AudioContext at that rate, and a worklet emits mono PCM16 in 100 ms frames. Browser noise suppression and auto-gain are off, because they hurt recognition.
+2. **Speech**: all audio, including silence, is streamed continuously to NeMo-Speech, which finds sentence ends itself (after 1.2 s of quiet). It sends text as words are recognized and a final transcript per sentence. It has no item IDs, so the server assigns turn IDs. Lone fragments such as "っ" or "で", which the model emits around language switches, are dropped.
+3. **Translation**: only finished sentences are translated, because the two models share the CPU. Qwen is asked for the other language only; the transcript is shown as-is for the original. See [Translation model settings](#translation-model-settings) below.
 4. **Captions**: the source column always shows the real transcript. Each phrase has a revision number, and the newest translation received is shown even while the sentence is still being spoken; an older response never overwrites a newer one. Finished phrases cancel in-progress requests and retry automatically if the server is busy. Turn IDs and predecessor IDs keep phrases in order when they finish out of order.
 
-Environment variables: `OPENAI_API_KEY`, `PORT` (3000), `TRANSCRIPTION_MODEL`, `TRANSLATION_MODEL`, `BABELFISH_PROVIDER=local` (set by `npm run local`), `LOCAL_ASR_URL` (`ws://127.0.0.1:8090`), `LOCAL_LLM_URL` (`http://127.0.0.1:8091`).
+### Translation model settings
+
+| Setting | Value | Set in |
+|---|---|---|
+| Model | Qwen3.5-2B Instruct, Q4_K_M quantization (4-bit, 1.3 GB) | `scripts/start-local.sh` |
+| Context window | **4,096 tokens**, shared by llama-server's default 4 parallel slots | `-c 4096` in `scripts/start-local.sh` |
+| Max output per translation | **200 tokens** (a safety cap) | `max_tokens` in `lib/translation.js` |
+| Context passed | Up to 2 earlier lines, same language as the sentence only | `localTranslationRequest` in `lib/translation.js` |
+| Decoding | Temperature 0 (greedy), thinking disabled, prompt caching on | `lib/translation.js` |
+| CPU threads | 4 | `-t 4` in `scripts/start-local.sh` |
+
+Actual usage per translation, measured in the benchmark (with nearly the same prompt):
+
+- **Prompt:** the fixed instructions are cached after the first request. Each request then processes about **59 new tokens** (at most 63).
+- **Output:** about **12 tokens** (at most 17).
+
+So a request uses under 100 of the 4,096 tokens. The window and output cap are far larger than needed. Context lines in the target language are left out because the small model tends to copy them instead of translating.
+
+Environment variables: `PORT` (3000), `BABELFISH_PROVIDER=local` (set by `npm run local`), `LOCAL_ASR_URL` (`ws://127.0.0.1:8090`), `LOCAL_LLM_URL` (`http://127.0.0.1:8091`).
 
 The server binds **127.0.0.1** and checks Host and Origin. It is a local prototype, not a multi-user service. Internet deployment would need HTTPS/WSS, authentication and per-user limits.
 
-## Performance (local mode)
+## Performance
 
 Measured on an i5-8250U laptop (4 cores, 8 GB RAM) with the sample recordings from Adel's LiveTranslate package (not included in this repository). Details and methods are in [benchmarks/README.md](benchmarks/README.md).
 
@@ -99,10 +102,7 @@ Known weaknesses:
 
 ## Data
 
-- **Local mode**: audio and text stay on this machine.
-- **OpenAI mode**: audio and caption text with recent context go to OpenAI. Responses requests set `store: false`; retention is otherwise governed by your API account.
-
-In both modes the app writes nothing to disk. Conversation text stays in browser memory until cleared or the page is closed. At most 100 finished rows are rendered, but export includes every finished phrase in memory. Sessions close after one hour.
+Audio and text stay on this machine. The app writes nothing to disk. Conversation text stays in browser memory until cleared or the page is closed. At most 100 finished rows are rendered, but export includes every finished phrase in memory. Sessions close after one hour.
 
 ## Verify
 
@@ -121,3 +121,19 @@ node scripts/demo-local.mjs path/to/sample.wav   # logs captions with timings, s
 ```
 
 See [development notes](docs/development.md) for design decisions and the real-audio evaluation checklist.
+
+## Optional: OpenAI cloud mode (untested)
+
+The code still contains the original cloud pipeline. It has **never been run with a real API key**, so its connectivity, quality and latency are unverified.
+
+```sh
+cp .env.example .env    # set OPENAI_API_KEY
+npm run dev
+```
+
+- **Speech:** OpenAI realtime transcription (`gpt-live-transcribe` by default) at 24 kHz. A client-side energy gate sends only speech, keeping 300 ms from just before speech starts, and ends a turn after 600 ms of quiet, a shorter pause after 4 s, or 8 s at most.
+- **Translation:** `gpt-4.1-mini` by default, with up to 6 earlier phrases as context. In-progress phrases are translated too, at most every 1–2 s. Structured output returns both languages plus the detected source, with at most 700 output tokens.
+- **Data:** audio, caption text and recent context go to OpenAI. Requests set `store: false`; retention is otherwise governed by your API account.
+- **Variables:** `OPENAI_API_KEY`, `TRANSCRIPTION_MODEL`, `TRANSLATION_MODEL`.
+
+The key stays on the server, never in the browser or Git. Restart after editing `.env`.
